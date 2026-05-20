@@ -3609,6 +3609,7 @@ class AudioDirector {
     this.oscillators = [];
     this.activeProfile = null;
     this.unlocked = false;
+    this.headphonesOn = false;
     this.muted = localStorage.getItem('dreamcore-muted') === '1';
     this.profileTimer = null;
     this.profiles = {
@@ -3639,14 +3640,18 @@ class AudioDirector {
     if (!AudioContext) return;
     this.ctx = new AudioContext();
     this.master = this.ctx.createGain();
-    this.master.gain.value = this.muted ? 0 : 0.72;
+    this.master.gain.value = this.canHear() ? 0.72 : 0;
     this.master.connect(this.ctx.destination);
     this.roomBus = this.ctx.createGain();
     this.roomBus.gain.value = 0.0;
     this.roomBus.connect(this.master);
     this.createNoiseLayer();
     this.unlocked = true;
-    this.enter(this.activeProfile || 'opening', true);
+    if (this.headphonesOn) this.enter(this.activeProfile || 'opening', true);
+  }
+
+  canHear() {
+    return this.headphonesOn && !this.muted;
   }
 
   createNoiseLayer() {
@@ -3688,7 +3693,7 @@ class AudioDirector {
 
   enter(profileName, immediate = false) {
     this.activeProfile = profileName;
-    if (!this.unlocked || !this.ctx) return;
+    if (!this.unlocked || !this.ctx || !this.headphonesOn) return;
     const profile = this.profiles[profileName] || this.profiles.opening;
     const now = this.ctx.currentTime;
     const ramp = immediate ? 0.08 : 1.8;
@@ -3725,32 +3730,43 @@ class AudioDirector {
   }
 
   pulse(kind = 'paper') {
-    if (!this.unlocked || !this.ctx || this.muted) return;
+    if (!this.unlocked || !this.ctx || !this.canHear()) return;
     const now = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     const filter = this.ctx.createBiquadFilter();
-    const freq = kind === 'door' ? 86 : kind === 'memory' ? 620 : 1200;
+    const freq = kind === 'door' ? 86 : kind === 'memory' ? 620 : kind === 'headphones' ? 420 : 1200;
     osc.type = kind === 'door' ? 'sine' : 'triangle';
     osc.frequency.setValueAtTime(freq, now);
     osc.frequency.exponentialRampToValueAtTime(Math.max(40, freq * 0.42), now + 0.32);
     filter.type = 'lowpass';
-    filter.frequency.value = kind === 'memory' ? 1600 : 900;
+    filter.frequency.value = kind === 'memory' ? 1600 : kind === 'headphones' ? 1200 : 900;
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(kind === 'door' ? 0.06 : 0.025, now + 0.025);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+    gain.gain.exponentialRampToValueAtTime(kind === 'door' ? 0.06 : kind === 'headphones' ? 0.035 : 0.025, now + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + (kind === 'headphones' ? 0.75 : 0.42));
     osc.connect(filter);
     filter.connect(gain);
     gain.connect(this.master);
     osc.start(now);
-    osc.stop(now + 0.5);
+    osc.stop(now + (kind === 'headphones' ? 0.9 : 0.5));
+  }
+
+  wearHeadphones() {
+    this.unlock();
+    this.headphonesOn = true;
+    if (this.master && this.ctx) {
+      this.master.gain.setTargetAtTime(this.canHear() ? 0.72 : 0, this.ctx.currentTime, 0.18);
+    }
+    this.updateButton();
+    this.pulse('headphones');
+    this.enter(this.activeProfile || 'preparation');
   }
 
   setMuted(nextMuted) {
     this.muted = nextMuted;
     localStorage.setItem('dreamcore-muted', nextMuted ? '1' : '0');
     if (this.master && this.ctx) {
-      this.master.gain.setTargetAtTime(nextMuted ? 0 : 0.72, this.ctx.currentTime, 0.25);
+      this.master.gain.setTargetAtTime(this.canHear() ? 0.72 : 0, this.ctx.currentTime, 0.25);
     }
     this.updateButton();
   }
@@ -3758,9 +3774,12 @@ class AudioDirector {
   updateButton() {
     if (!this.toggleEl) return;
     this.toggleEl.classList.toggle('muted', this.muted);
-    this.toggleEl.textContent = this.muted ? '×' : '♪';
-    this.toggleEl.setAttribute('aria-label', this.muted ? '开启声音' : '关闭声音');
-    this.toggleEl.title = this.muted ? '开启声音' : '关闭声音';
+    this.toggleEl.textContent = this.muted ? '×' : this.headphonesOn ? '♪' : '○';
+    const label = this.headphonesOn
+      ? (this.muted ? '开启声音' : '关闭声音')
+      : (this.muted ? '声音已关闭，戴上耳机后仍保持静音' : '戴上耳机后开启声音');
+    this.toggleEl.setAttribute('aria-label', label);
+    this.toggleEl.title = label;
   }
 
   updateScene(t) {
@@ -4245,8 +4264,12 @@ function animate() {
       const done = animateHands(leftHand, rightHand, elapsed, handState.targetEquip, itemGroup);
       if (done) {
         if (itemGroup) itemGroup.visible = false;
-        if (handState.targetEquip === 'hp') prepState.hpActive = true;
-        else prepState.vrActive = true;
+        if (handState.targetEquip === 'hp') {
+          prepState.hpActive = true;
+          audioDirector.wearHeadphones();
+        } else {
+          prepState.vrActive = true;
+        }
         handState.targetEquip = null;
         handState.phase = 'idle';
       }
