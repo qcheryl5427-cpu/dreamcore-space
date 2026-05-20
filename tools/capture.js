@@ -80,7 +80,12 @@ async function capture() {
 
     // 3. Hover headphones (guide icon appears)
     // Need to move mouse to headphones area (canvas coords ~ center-left)
-    const bbox = await page.locator('canvas').boundingBox();
+    const bbox = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas');
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    });
     if (bbox) {
       await page.mouse.move(bbox.x + bbox.width * 0.30, bbox.y + bbox.height * 0.80);
       await page.waitForTimeout(600);

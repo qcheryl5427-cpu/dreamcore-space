@@ -181,6 +181,34 @@
   body.file-mode #file-mode-notice {
     display: block;
   }
+  #audio-toggle {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 30;
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    border: 1px solid rgba(235, 205, 150, 0.22);
+    background: rgba(18, 13, 8, 0.42);
+    color: rgba(240, 216, 170, 0.76);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 0 24px rgba(255, 180, 80, 0.06);
+    transition: border-color 0.25s ease, color 0.25s ease, background 0.25s ease, opacity 0.25s ease;
+  }
+  #audio-toggle:hover {
+    border-color: rgba(255, 224, 160, 0.5);
+    color: rgba(255, 232, 180, 0.96);
+    background: rgba(30, 22, 12, 0.58);
+  }
+  #audio-toggle.muted {
+    color: rgba(150, 140, 130, 0.58);
+    border-color: rgba(180, 170, 155, 0.16);
+    box-shadow: none;
+  }
 </style>
 <script type="importmap">
 {
@@ -210,6 +238,7 @@
 <div id="blackout"></div>
 <div id="breath-text">请戴上耳机……</div>
 <div id="memory-toast"></div>
+<button id="audio-toggle" type="button" aria-label="切换声音" title="切换声音">♪</button>
 <div id="file-mode-notice">当前是 file 模式，3D 模块可能无法完整加载。点击“推门进入”会切到本地服务器版本。</div>
 
 <script>
@@ -3568,6 +3597,180 @@ controller.targetYaw = 0;
 controller.pitch = -0.015;
 controller.targetPitch = -0.015;
 
+class AudioDirector {
+  constructor(toggleEl) {
+    this.toggleEl = toggleEl;
+    this.ctx = null;
+    this.master = null;
+    this.roomBus = null;
+    this.noiseSource = null;
+    this.noiseFilter = null;
+    this.noiseGain = null;
+    this.oscillators = [];
+    this.activeProfile = null;
+    this.unlocked = false;
+    this.muted = localStorage.getItem('dreamcore-muted') === '1';
+    this.profileTimer = null;
+    this.profiles = {
+      opening: { noise: 0.018, noiseFreq: 380, notes: [42, 54], wave: 'sine', gain: 0.018, color: 'warm', wobble: 0.15 },
+      preparation: { noise: 0.032, noiseFreq: 1100, notes: [50, 57, 62], wave: 'triangle', gain: 0.014, color: 'paper', wobble: 0.28 },
+      zone1: { noise: 0.024, noiseFreq: 720, notes: [45, 52, 57], wave: 'sine', gain: 0.022, color: 'warm', wobble: 0.12 },
+      zone2: { noise: 0.04, noiseFreq: 260, notes: [34, 35, 46], wave: 'sawtooth', gain: 0.016, color: 'hot', wobble: 0.42 },
+      zone3: { noise: 0.038, noiseFreq: 520, notes: [38, 50, 55], wave: 'sine', gain: 0.019, color: 'cold', wobble: 0.2 },
+      zone4: { noise: 0.026, noiseFreq: 940, notes: [40, 47, 59], wave: 'triangle', gain: 0.016, color: 'focus', wobble: 0.34 },
+      zone5: { noise: 0.02, noiseFreq: 460, notes: [43, 50, 56], wave: 'sine', gain: 0.018, color: 'open', wobble: 0.16 },
+    };
+    this.updateButton();
+    if (this.toggleEl) {
+      this.toggleEl.addEventListener('click', (event) => {
+        event.stopPropagation();
+        this.unlock();
+        this.setMuted(!this.muted);
+      });
+    }
+  }
+
+  unlock() {
+    if (this.unlocked) {
+      if (this.ctx?.state === 'suspended') this.ctx.resume();
+      return;
+    }
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    this.ctx = new AudioContext();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = this.muted ? 0 : 0.72;
+    this.master.connect(this.ctx.destination);
+    this.roomBus = this.ctx.createGain();
+    this.roomBus.gain.value = 0.0;
+    this.roomBus.connect(this.master);
+    this.createNoiseLayer();
+    this.unlocked = true;
+    this.enter(this.activeProfile || 'opening', true);
+  }
+
+  createNoiseLayer() {
+    const length = Math.max(1, Math.floor(this.ctx.sampleRate * 2));
+    const buffer = this.ctx.createBuffer(1, length, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+    this.noiseSource = this.ctx.createBufferSource();
+    this.noiseSource.buffer = buffer;
+    this.noiseSource.loop = true;
+    this.noiseFilter = this.ctx.createBiquadFilter();
+    this.noiseFilter.type = 'lowpass';
+    this.noiseFilter.frequency.value = 500;
+    this.noiseFilter.Q.value = 0.8;
+    this.noiseGain = this.ctx.createGain();
+    this.noiseGain.gain.value = 0;
+    this.noiseSource.connect(this.noiseFilter);
+    this.noiseFilter.connect(this.noiseGain);
+    this.noiseGain.connect(this.roomBus);
+    this.noiseSource.start();
+  }
+
+  midiToHz(midi) {
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  clearOscillators(at = this.ctx.currentTime) {
+    this.oscillators.forEach(({ osc, gain }) => {
+      gain.gain.cancelScheduledValues(at);
+      gain.gain.setTargetAtTime(0.0001, at, 0.6);
+      try { osc.stop(at + 1.2); } catch (_) {}
+    });
+    this.oscillators = [];
+    if (this.profileTimer) {
+      clearInterval(this.profileTimer);
+      this.profileTimer = null;
+    }
+  }
+
+  enter(profileName, immediate = false) {
+    this.activeProfile = profileName;
+    if (!this.unlocked || !this.ctx) return;
+    const profile = this.profiles[profileName] || this.profiles.opening;
+    const now = this.ctx.currentTime;
+    const ramp = immediate ? 0.08 : 1.8;
+    this.roomBus.gain.cancelScheduledValues(now);
+    this.roomBus.gain.setTargetAtTime(0.92, now, ramp);
+    this.noiseFilter.frequency.setTargetAtTime(profile.noiseFreq, now, ramp);
+    this.noiseGain.gain.setTargetAtTime(profile.noise, now, ramp);
+    this.clearOscillators(now);
+    profile.notes.forEach((note, idx) => {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      const filter = this.ctx.createBiquadFilter();
+      osc.type = profile.wave;
+      osc.frequency.value = this.midiToHz(note) * (1 + idx * 0.0015);
+      filter.type = 'lowpass';
+      filter.frequency.value = profile.color === 'hot' ? 520 : profile.color === 'cold' ? 760 : 920;
+      filter.Q.value = 0.35;
+      gain.gain.value = 0.0001;
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.roomBus);
+      osc.start(now + idx * 0.04);
+      gain.gain.setTargetAtTime(profile.gain / (idx + 1.8), now + idx * 0.04, ramp);
+      this.oscillators.push({ osc, gain, filter, base: osc.frequency.value, wobble: profile.wobble * (idx + 1) });
+    });
+    this.profileTimer = setInterval(() => {
+      if (!this.ctx) return;
+      const t = this.ctx.currentTime;
+      this.oscillators.forEach((node, idx) => {
+        const drift = Math.sin(t * (0.08 + idx * 0.035)) * node.wobble;
+        node.osc.frequency.setTargetAtTime(node.base + drift, t, 0.8);
+      });
+    }, 450);
+  }
+
+  pulse(kind = 'paper') {
+    if (!this.unlocked || !this.ctx || this.muted) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    const filter = this.ctx.createBiquadFilter();
+    const freq = kind === 'door' ? 86 : kind === 'memory' ? 620 : 1200;
+    osc.type = kind === 'door' ? 'sine' : 'triangle';
+    osc.frequency.setValueAtTime(freq, now);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(40, freq * 0.42), now + 0.32);
+    filter.type = 'lowpass';
+    filter.frequency.value = kind === 'memory' ? 1600 : 900;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(kind === 'door' ? 0.06 : 0.025, now + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master);
+    osc.start(now);
+    osc.stop(now + 0.5);
+  }
+
+  setMuted(nextMuted) {
+    this.muted = nextMuted;
+    localStorage.setItem('dreamcore-muted', nextMuted ? '1' : '0');
+    if (this.master && this.ctx) {
+      this.master.gain.setTargetAtTime(nextMuted ? 0 : 0.72, this.ctx.currentTime, 0.25);
+    }
+    this.updateButton();
+  }
+
+  updateButton() {
+    if (!this.toggleEl) return;
+    this.toggleEl.classList.toggle('muted', this.muted);
+    this.toggleEl.textContent = this.muted ? '×' : '♪';
+    this.toggleEl.setAttribute('aria-label', this.muted ? '开启声音' : '关闭声音');
+    this.toggleEl.title = this.muted ? '开启声音' : '关闭声音';
+  }
+
+  updateScene(t) {
+    if (!this.unlocked || !this.ctx || !this.noiseFilter) return;
+    const profile = this.profiles[this.activeProfile] || this.profiles.opening;
+    const breathing = Math.sin(t * 0.23) * 18 + Math.sin(t * 0.07) * 26;
+    this.noiseFilter.frequency.setTargetAtTime(Math.max(120, profile.noiseFreq + breathing), this.ctx.currentTime, 0.5);
+  }
+}
+
 // ============================================================
 // 6. Phase Management
 // ============================================================
@@ -3576,9 +3779,12 @@ const openingScreen = document.getElementById('opening-screen');
 const blackout = document.getElementById('blackout');
 const breathText = document.getElementById('breath-text');
 const enterHint = document.getElementById('enterHint');
+const audioDirector = new AudioDirector(document.getElementById('audio-toggle'));
 
 function beginTransition() {
   if (phase !== 'opening') return;
+  audioDirector.unlock();
+  audioDirector.pulse('door');
   phase = 'transition';
   openingScreen.classList.add('hidden');
   blackout.classList.add('active');
@@ -3602,6 +3808,7 @@ function enterPreparation() {
   controller.boundaryMin.set(-4, 0, -4);
   controller.boundaryMax.set(4, 3, 3);
   scene.fog = null;
+  audioDirector.enter('preparation');
   blackout.classList.remove('active');
   breathText.classList.remove('visible');
 }
@@ -3622,6 +3829,7 @@ function enterZone(zoneIndex) {
   if (!cfg) return;
 
   // Step 1: fade to black
+  audioDirector.pulse('door');
   blackout.classList.add('active');
 
   setTimeout(() => {
@@ -3647,6 +3855,7 @@ function enterZone(zoneIndex) {
     controller.boundaryMax.set(cfg.bMax[0], cfg.bMax[1], cfg.bMax[2]);
     // Fog
     scene.fog = new THREE.FogExp2(cfg.fogColor, cfg.fogDensity);
+    audioDirector.enter(`zone${zoneIndex}`);
 
     // Step 3: fade back in after a short hold
     setTimeout(() => {
@@ -3691,6 +3900,7 @@ renderer.domElement.addEventListener('click', () => {
 });
 function showMemoryToast(card) {
   if (!memoryToast || !card) return;
+  audioDirector.pulse('memory');
   const title = card.userData.memoryTitle || '记忆槽位';
   const lines = (card.userData.memoryLines || []).filter(Boolean).join(' / ');
   memoryToast.textContent = lines ? `${title} · ${lines}` : title;
@@ -3963,6 +4173,7 @@ function animate() {
   const t = clock.getElapsedTime();
 
   controller.update(dt);
+  audioDirector.updateScene(t);
 
   // Door hover in opening (only detect door meshes)
   if (phase === 'opening') {
