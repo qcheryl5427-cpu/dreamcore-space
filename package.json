@@ -1,0 +1,14 @@
+{
+  "name": "dreamcore-space-tools",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "capture": "node tools/capture.js",
+    "lint": "node tools/lint-visual.js",
+    "review": "node tools/visual-review.js",
+    "review:gemini": "node tools/visual-review.js --api"
+  },
+  "devDependencies": {
+    "playwright": "^1.42.0"
+  }
+}

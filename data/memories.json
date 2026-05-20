@@ -1,0 +1,40 @@
+{
+  "archives": [
+    {
+      "id": "archive-1",
+      "title": "档案一",
+      "theme": "",
+      "summary": "",
+      "items": []
+    },
+    {
+      "id": "archive-2",
+      "title": "档案二",
+      "theme": "",
+      "summary": "",
+      "items": []
+    },
+    {
+      "id": "archive-3",
+      "title": "档案三",
+      "theme": "",
+      "summary": "",
+      "items": []
+    },
+    {
+      "id": "archive-4",
+      "title": "档案四",
+      "theme": "",
+      "summary": "",
+      "items": []
+    },
+    {
+      "id": "archive-5",
+      "title": "档案五",
+      "theme": "",
+      "summary": "",
+      "items": []
+    }
+  ]
+}
+

@@ -1,0 +1,23 @@
+.DS_Store
+*.log
+.env
+.env.*
+
+# Local dependencies and generated review artifacts
+node_modules/
+screenshots/
+reviews/
+
+# Local-only visual references used for iteration, not needed by the public demo
+参考图/
+
+# Keep extracted runtime textures, but do not publish source archives
+assets/textures/downloads/
+assets/textures/*.zip
+assets/textures/**/*.blend
+assets/textures/**/*.mtlx
+assets/textures/**/*.tres
+assets/textures/**/*.usdc
+assets/textures/**/*_Displacement.jpg
+assets/textures/**/*_NormalDX.jpg
+assets/textures/**/*_AmbientOcclusion.jpg
